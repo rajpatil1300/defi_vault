@@ -1,0 +1,143 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  NODE_VERSION: '18'
+  ANCHOR_VERSION: '0.29.0'
+
+jobs:
+  test-smart-contract:
+    runs-on: ubuntu-latest
+    name: Test Smart Contract
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+        cache: 'npm'
+    
+    - name: Install Rust
+      uses: actions-rs/toolchain@v1
+      with:
+        toolchain: stable
+        profile: minimal
+        override: true
+    
+    - name: Install Solana CLI
+      run: |
+        sh -c "$(curl -sSfL https://release.solana.com/v1.17.0/install)"
+        echo "$HOME/.local/share/solana/install/active_release/bin" >> $GITHUB_PATH
+    
+    - name: Install Anchor CLI
+      run: |
+        npm install -g @coral-xyz/anchor-cli@${{ env.ANCHOR_VERSION }}
+    
+    - name: Install dependencies
+      run: npm ci
+    
+    - name: Build Anchor program
+      run: anchor build
+    
+    - name: Run Anchor tests
+      run: anchor test --skip-deploy
+  
+  test-frontend:
+    runs-on: ubuntu-latest
+    name: Test Frontend
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+        cache: 'npm'
+    
+    - name: Install dependencies
+      run: npm ci
+    
+    - name: Run linting
+      run: npm run lint
+    
+    - name: Run frontend tests
+      run: npm test
+    
+    - name: Build frontend
+      run: npm run build
+  
+  deploy-devnet:
+    runs-on: ubuntu-latest
+    name: Deploy to Devnet
+    needs: [test-smart-contract, test-frontend]
+    if: github.ref == 'refs/heads/develop'
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+        cache: 'npm'
+    
+    - name: Install Rust
+      uses: actions-rs/toolchain@v1
+      with:
+        toolchain: stable
+        profile: minimal
+        override: true
+    
+    - name: Install Solana CLI
+      run: |
+        sh -c "$(curl -sSfL https://release.solana.com/v1.17.0/install)"
+        echo "$HOME/.local/share/solana/install/active_release/bin" >> $GITHUB_PATH
+    
+    - name: Install Anchor CLI
+      run: |
+        npm install -g @coral-xyz/anchor-cli@${{ env.ANCHOR_VERSION }}
+    
+    - name: Install dependencies
+      run: npm ci
+    
+    - name: Setup Solana keypair
+      run: |
+        mkdir -p ~/.config/solana
+        echo "${{ secrets.SOLANA_PRIVATE_KEY }}" > ~/.config/solana/id.json
+        chmod 600 ~/.config/solana/id.json
+    
+    - name: Deploy to Devnet
+      run: |
+        solana config set --url https://api.devnet.solana.com
+        solana airdrop 2 || true
+        anchor build
+        anchor deploy
+        node scripts/initialize-vaults.js
+  
+  build-docker:
+    runs-on: ubuntu-latest
+    name: Build Docker Image
+    needs: [test-frontend]
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+    
+    - name: Build Docker image
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        push: false
+        tags: solana-defi-vault:latest
+        cache-from: type=gha
+        cache-to: type=gha,mode=max

@@ -1,0 +1,665 @@
+export type DefiVault = {
+  "version": "0.1.0",
+  "name": "defi_vault",
+  "instructions": [
+    {
+      "name": "initializeVault",
+      "accounts": [
+        {
+          "name": "vault",
+          "isMut": true,
+          "isSigner": false
+        },
+        {
+          "name": "authority",
+          "isMut": true,
+          "isSigner": true
+        },
+        {
+          "name": "tokenMint",
+          "isMut": false,
+          "isSigner": false
+        },
+        {
+          "name": "tokenVault",
+          "isMut": true,
+          "isSigner": false
+        },
+        {
+          "name": "tokenProgram",
+          "isMut": false,
+          "isSigner": false
+        },
+        {
+          "name": "systemProgram",
+          "isMut": false,
+          "isSigner": false
+        },
+        {
+          "name": "rent",
+          "isMut": false,
+          "isSigner": false
+        }
+      ],
+      "args": [
+        {
+          "name": "interestRate",
+          "type": "u64"
+        },
+        {
+          "name": "minDeposit",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "deposit",
+      "accounts": [
+        {
+          "name": "vault",
+          "isMut": true,
+          "isSigner": false
+        },
+        {
+          "name": "userPosition",
+          "isMut": true,
+          "isSigner": false
+        },
+        {
+          "name": "user",
+          "isMut": true,
+          "isSigner": true
+        },
+        {
+          "name": "userTokenAccount",
+          "isMut": true,
+          "isSigner": false
+        },
+        {
+          "name": "vaultTokenAccount",
+          "isMut": true,
+          "isSigner": false
+        },
+        {
+          "name": "tokenProgram",
+          "isMut": false,
+          "isSigner": false
+        },
+        {
+          "name": "systemProgram",
+          "isMut": false,
+          "isSigner": false
+        },
+        {
+          "name": "rent",
+          "isMut": false,
+          "isSigner": false
+        }
+      ],
+      "args": [
+        {
+          "name": "amount",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "withdraw",
+      "accounts": [
+        {
+          "name": "vault",
+          "isMut": true,
+          "isSigner": false
+        },
+        {
+          "name": "userPosition",
+          "isMut": true,
+          "isSigner": false
+        },
+        {
+          "name": "user",
+          "isMut": true,
+          "isSigner": true
+        },
+        {
+          "name": "userTokenAccount",
+          "isMut": true,
+          "isSigner": false
+        },
+        {
+          "name": "vaultTokenAccount",
+          "isMut": true,
+          "isSigner": false
+        },
+        {
+          "name": "tokenProgram",
+          "isMut": false,
+          "isSigner": false
+        }
+      ],
+      "args": [
+        {
+          "name": "amount",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "getUserBalance",
+      "accounts": [
+        {
+          "name": "vault",
+          "isMut": false,
+          "isSigner": false
+        },
+        {
+          "name": "userPosition",
+          "isMut": false,
+          "isSigner": false
+        }
+      ],
+      "args": []
+    }
+  ],
+  "accounts": [
+    {
+      "name": "vault",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "authority",
+            "type": "publicKey"
+          },
+          {
+            "name": "tokenMint",
+            "type": "publicKey"
+          },
+          {
+            "name": "tokenVault",
+            "type": "publicKey"
+          },
+          {
+            "name": "interestRate",
+            "type": "u64"
+          },
+          {
+            "name": "minDeposit",
+            "type": "u64"
+          },
+          {
+            "name": "totalDeposited",
+            "type": "u64"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          },
+          {
+            "name": "createdAt",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "userPosition",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "owner",
+            "type": "publicKey"
+          },
+          {
+            "name": "vault",
+            "type": "publicKey"
+          },
+          {
+            "name": "depositedAmount",
+            "type": "u64"
+          },
+          {
+            "name": "accruedInterest",
+            "type": "u64"
+          },
+          {
+            "name": "lastUpdateTime",
+            "type": "i64"
+          },
+          {
+            "name": "depositCount",
+            "type": "u64"
+          },
+          {
+            "name": "withdrawCount",
+            "type": "u64"
+          }
+        ]
+      }
+    }
+  ],
+  "types": [
+    {
+      "name": "UserBalanceInfo",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "depositedAmount",
+            "type": "u64"
+          },
+          {
+            "name": "accruedInterest",
+            "type": "u64"
+          },
+          {
+            "name": "totalBalance",
+            "type": "u64"
+          },
+          {
+            "name": "lastUpdateTime",
+            "type": "i64"
+          }
+        ]
+      }
+    }
+  ],
+  "events": [
+    {
+      "name": "DepositEvent",
+      "fields": [
+        {
+          "name": "user",
+          "type": "publicKey",
+          "index": false
+        },
+        {
+          "name": "vault",
+          "type": "publicKey",
+          "index": false
+        },
+        {
+          "name": "amount",
+          "type": "u64",
+          "index": false
+        },
+        {
+          "name": "timestamp",
+          "type": "i64",
+          "index": false
+        }
+      ]
+    },
+    {
+      "name": "WithdrawEvent",
+      "fields": [
+        {
+          "name": "user",
+          "type": "publicKey",
+          "index": false
+        },
+        {
+          "name": "vault",
+          "type": "publicKey",
+          "index": false
+        },
+        {
+          "name": "amount",
+          "type": "u64",
+          "index": false
+        },
+        {
+          "name": "timestamp",
+          "type": "i64",
+          "index": false
+        }
+      ]
+    }
+  ],
+  "errors": [
+    {
+      "code": 6000,
+      "name": "InsufficientDepositAmount",
+      "msg": "Insufficient deposit amount"
+    },
+    {
+      "code": 6001,
+      "name": "InsufficientBalance",
+      "msg": "Insufficient balance for withdrawal"
+    }
+  ]
+};
+
+export const IDL: DefiVault = {
+  "version": "0.1.0",
+  "name": "defi_vault",
+  "instructions": [
+    {
+      "name": "initializeVault",
+      "accounts": [
+        {
+          "name": "vault",
+          "isMut": true,
+          "isSigner": false
+        },
+        {
+          "name": "authority",
+          "isMut": true,
+          "isSigner": true
+        },
+        {
+          "name": "tokenMint",
+          "isMut": false,
+          "isSigner": false
+        },
+        {
+          "name": "tokenVault",
+          "isMut": true,
+          "isSigner": false
+        },
+        {
+          "name": "tokenProgram",
+          "isMut": false,
+          "isSigner": false
+        },
+        {
+          "name": "systemProgram",
+          "isMut": false,
+          "isSigner": false
+        },
+        {
+          "name": "rent",
+          "isMut": false,
+          "isSigner": false
+        }
+      ],
+      "args": [
+        {
+          "name": "interestRate",
+          "type": "u64"
+        },
+        {
+          "name": "minDeposit",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "deposit",
+      "accounts": [
+        {
+          "name": "vault",
+          "isMut": true,
+          "isSigner": false
+        },
+        {
+          "name": "userPosition",
+          "isMut": true,
+          "isSigner": false
+        },
+        {
+          "name": "user",
+          "isMut": true,
+          "isSigner": true
+        },
+        {
+          "name": "userTokenAccount",
+          "isMut": true,
+          "isSigner": false
+        },
+        {
+          "name": "vaultTokenAccount",
+          "isMut": true,
+          "isSigner": false
+        },
+        {
+          "name": "tokenProgram",
+          "isMut": false,
+          "isSigner": false
+        },
+        {
+          "name": "systemProgram",
+          "isMut": false,
+          "isSigner": false
+        },
+        {
+          "name": "rent",
+          "isMut": false,
+          "isSigner": false
+        }
+      ],
+      "args": [
+        {
+          "name": "amount",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "withdraw",
+      "accounts": [
+        {
+          "name": "vault",
+          "isMut": true,
+          "isSigner": false
+        },
+        {
+          "name": "userPosition",
+          "isMut": true,
+          "isSigner": false
+        },
+        {
+          "name": "user",
+          "isMut": true,
+          "isSigner": true
+        },
+        {
+          "name": "userTokenAccount",
+          "isMut": true,
+          "isSigner": false
+        },
+        {
+          "name": "vaultTokenAccount",
+          "isMut": true,
+          "isSigner": false
+        },
+        {
+          "name": "tokenProgram",
+          "isMut": false,
+          "isSigner": false
+        }
+      ],
+      "args": [
+        {
+          "name": "amount",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "getUserBalance",
+      "accounts": [
+        {
+          "name": "vault",
+          "isMut": false,
+          "isSigner": false
+        },
+        {
+          "name": "userPosition",
+          "isMut": false,
+          "isSigner": false
+        }
+      ],
+      "args": []
+    }
+  ],
+  "accounts": [
+    {
+      "name": "vault",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "authority",
+            "type": "publicKey"
+          },
+          {
+            "name": "tokenMint",
+            "type": "publicKey"
+          },
+          {
+            "name": "tokenVault",
+            "type": "publicKey"
+          },
+          {
+            "name": "interestRate",
+            "type": "u64"
+          },
+          {
+            "name": "minDeposit",
+            "type": "u64"
+          },
+          {
+            "name": "totalDeposited",
+            "type": "u64"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          },
+          {
+            "name": "createdAt",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "userPosition",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "owner",
+            "type": "publicKey"
+          },
+          {
+            "name": "vault",
+            "type": "publicKey"
+          },
+          {
+            "name": "depositedAmount",
+            "type": "u64"
+          },
+          {
+            "name": "accruedInterest",
+            "type": "u64"
+          },
+          {
+            "name": "lastUpdateTime",
+            "type": "i64"
+          },
+          {
+            "name": "depositCount",
+            "type": "u64"
+          },
+          {
+            "name": "withdrawCount",
+            "type": "u64"
+          }
+        ]
+      }
+    }
+  ],
+  "types": [
+    {
+      "name": "UserBalanceInfo",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "depositedAmount",
+            "type": "u64"
+          },
+          {
+            "name": "accruedInterest",
+            "type": "u64"
+          },
+          {
+            "name": "totalBalance",
+            "type": "u64"
+          },
+          {
+            "name": "lastUpdateTime",
+            "type": "i64"
+          }
+        ]
+      }
+    }
+  ],
+  "events": [
+    {
+      "name": "DepositEvent",
+      "fields": [
+        {
+          "name": "user",
+          "type": "publicKey",
+          "index": false
+        },
+        {
+          "name": "vault",
+          "type": "publicKey",
+          "index": false
+        },
+        {
+          "name": "amount",
+          "type": "u64",
+          "index": false
+        },
+        {
+          "name": "timestamp",
+          "type": "i64",
+          "index": false
+        }
+      ]
+    },
+    {
+      "name": "WithdrawEvent",
+      "fields": [
+        {
+          "name": "user",
+          "type": "publicKey",
+          "index": false
+        },
+        {
+          "name": "vault",
+          "type": "publicKey",
+          "index": false
+        },
+        {
+          "name": "amount",
+          "type": "u64",
+          "index": false
+        },
+        {
+          "name": "timestamp",
+          "type": "i64",
+          "index": false
+        }
+      ]
+    }
+  ],
+  "errors": [
+    {
+      "code": 6000,
+      "name": "InsufficientDepositAmount",
+      "msg": "Insufficient deposit amount"
+    },
+    {
+      "code": 6001,
+      "name": "InsufficientBalance",
+      "msg": "Insufficient balance for withdrawal"
+    }
+  ]
+};
