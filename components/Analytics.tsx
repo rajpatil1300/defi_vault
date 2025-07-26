@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useWallet } from '@solana/wallet-adapter-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -55,16 +55,7 @@ export default function Analytics() {
     { symbol: 'USDT', ...usdtVault }
   ];
 
-  useEffect(() => {
-    if (!connected || !publicKey) {
-      setAnalyticsData(null);
-      return;
-    }
-
-    calculateAnalytics();
-  }, [connected, publicKey, solVault.userPosition, usdcVault.userPosition, usdtVault.userPosition, transactions]);
-
-  const calculateAnalytics = () => {
+  const calculateAnalytics = useCallback(() => {
     setLoading(true);
 
     try {
@@ -135,7 +126,16 @@ export default function Analytics() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [vaults, transactions]);
+
+  useEffect(() => {
+    if (!connected || !publicKey) {
+      setAnalyticsData(null);
+      return;
+    }
+
+    calculateAnalytics();
+  }, [connected, publicKey, solVault.userPosition, usdcVault.userPosition, usdtVault.userPosition, transactions, calculateAnalytics]);
 
   const refreshAnalytics = () => {
     vaults.forEach(vault => {

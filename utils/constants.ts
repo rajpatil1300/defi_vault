@@ -12,6 +12,7 @@ export const SUPPORTED_TOKENS = [
     mint: 'So11111111111111111111111111111111111111112', // Wrapped SOL (WSOL)
     decimals: 9,
     color: '#9945FF',
+    programId: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA', // Standard Token Program
   },
   {
     symbol: 'USDC',
@@ -19,6 +20,7 @@ export const SUPPORTED_TOKENS = [
     mint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', // USDC mainnet mint (works on devnet too)
     decimals: 6,
     color: '#2775CA',
+    programId: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA', // Standard Token Program
   },
   {
     symbol: 'USDT',
@@ -26,6 +28,7 @@ export const SUPPORTED_TOKENS = [
     mint: 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB', // USDT mainnet mint (works on devnet too)
     decimals: 6,
     color: '#26A17B',
+    programId: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA', // Standard Token Program
   },
 ];
 

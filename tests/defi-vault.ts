@@ -207,7 +207,7 @@ describe("defi-vault", () => {
       
       assert.fail("Should have failed with insufficient balance");
     } catch (error) {
-      assert.include(error.toString(), "InsufficientBalance");
+      assert.include((error as Error).toString(), "InsufficientBalance");
     }
   });
 
@@ -232,7 +232,7 @@ describe("defi-vault", () => {
       
       assert.fail("Should have failed with insufficient deposit amount");
     } catch (error) {
-      assert.include(error.toString(), "InsufficientDepositAmount");
+      assert.include((error as Error).toString(), "InsufficientDepositAmount");
     }
   });
 });

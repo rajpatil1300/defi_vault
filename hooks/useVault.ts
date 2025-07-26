@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useWallet } from '@solana/wallet-adapter-react';
-import { Program, AnchorProvider, web3, BN } from '@coral-xyz/anchor';
+import { Program, web3, BN } from '@coral-xyz/anchor';
 import { PublicKey, SystemProgram, Transaction, TransactionInstruction } from '@solana/web3.js';
 import { 
   TOKEN_PROGRAM_ID, 
@@ -36,8 +36,20 @@ interface VaultInfo {
   created_at: number;
 }
 
+// Helper function to calculate interest (matches the smart contract logic)
+function calculateInterest(principal: number, interestRateBps: number, timeElapsed: number): number {
+  if (principal === 0 || timeElapsed <= 0) {
+    return 0;
+  }
+  
+  const secondsPerYear = 365 * 24 * 60 * 60;
+  const interest = (principal * interestRateBps * timeElapsed) / (10000 * secondsPerYear);
+  
+  return Math.floor(interest);
+}
+
 export function useVault(tokenSymbol: string) {
-  const { publicKey, sendTransaction, signTransaction, signAllTransactions } = useWallet();
+  const { publicKey, sendTransaction, signTransaction } = useWallet();
   const connection = getConnection();
   
   const [userPosition, setUserPosition] = useState<UserPosition | null>(null);
@@ -45,11 +57,18 @@ export function useVault(tokenSymbol: string) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Use ref to track if component is mounted
   const mountedRef = useRef(true);
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
 
   const token = SUPPORTED_TOKENS.find(t => t.symbol === tokenSymbol);
+
+  const getCorrectTokenProgramId = useCallback(() => {
+    // Default to TOKEN_PROGRAM_ID for safety, but use 2022 if specified (and not SOL)
+    if (token && token.symbol !== 'SOL' && token.programId === 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb') {
+        return TOKEN_2022_PROGRAM_ID;
+    }
+    return TOKEN_PROGRAM_ID;
+  }, [token]);
 
   const refreshData = useCallback(async () => {
     if (!publicKey || !token || !mountedRef.current) {
@@ -65,695 +84,371 @@ export function useVault(tokenSymbol: string) {
       const program = getVaultProgram(connection, publicKey);
       const tokenMint = new PublicKey(token.mint);
       
-      // Get vault PDA
       const [vaultPda] = PublicKey.findProgramAddressSync(
         [Buffer.from('vault'), tokenMint.toBuffer()],
         PROGRAM_ID
       );
 
-      // Get user position PDA
       const [userPositionPda] = PublicKey.findProgramAddressSync(
         [Buffer.from('user-position'), vaultPda.toBuffer(), publicKey.toBuffer()],
         PROGRAM_ID
       );
 
-      try {
-        // Try to fetch vault info with throttling
-        const vaultCacheKey = `vault-${vaultPda.toString()}`;
-        const vaultAccount = await rpcThrottle.throttle(
-          vaultCacheKey,
-          () => program.account.vault.fetch(vaultPda),
-          30000 // Cache for 30 seconds
+      // Fetch vault and user position data
+      const vaultCacheKey = `vault-${vaultPda.toString()}`;
+      const vaultAccount = await rpcThrottle.throttle(
+        vaultCacheKey,
+        () => program.account.vault.fetch(vaultPda).catch(() => null),
+        30000 // Cache for 30 seconds
+      );
+
+      if (mountedRef.current && vaultAccount) {
+        setVaultInfo({
+          authority: vaultAccount.authority,
+          token_mint: vaultAccount.tokenMint,
+          interest_rate: vaultAccount.interestRate.toNumber(),
+          min_deposit: vaultAccount.minDeposit.toNumber(),
+          total_deposited: vaultAccount.totalDeposited.toNumber(),
+          created_at: vaultAccount.createdAt.toNumber(),
+        });
+
+        const positionCacheKey = `position-${userPositionPda.toString()}`;
+        const userPositionAccount = await rpcThrottle.throttle(
+          positionCacheKey,
+          () => program.account.userPosition.fetch(userPositionPda).catch(() => null),
+          15000 // Cache for 15 seconds
         );
+        
+        if (mountedRef.current && userPositionAccount) {
+          const currentTime = Math.floor(Date.now() / 1000);
+          const timeElapsed = currentTime - userPositionAccount.lastUpdateTime.toNumber();
+          const additionalInterest = calculateInterest(
+            userPositionAccount.depositedAmount.toNumber(),
+            vaultAccount.interestRate.toNumber(),
+            timeElapsed
+          );
 
-        if (mountedRef.current && vaultAccount) {
-          setVaultInfo({
-            authority: vaultAccount.authority,
-            token_mint: vaultAccount.tokenMint,
-            interest_rate: vaultAccount.interestRate.toNumber(),
-            min_deposit: vaultAccount.minDeposit.toNumber(),
-            total_deposited: vaultAccount.totalDeposited.toNumber(),
-            created_at: vaultAccount.createdAt.toNumber(),
+          setUserPosition({
+            deposited_amount: userPositionAccount.depositedAmount.toNumber(),
+            accrued_interest: userPositionAccount.accruedInterest.toNumber() + additionalInterest,
+            last_update_time: userPositionAccount.lastUpdateTime.toNumber(),
+            deposit_count: userPositionAccount.depositCount.toNumber(),
+            withdraw_count: userPositionAccount.withdrawCount.toNumber(),
           });
-
-          // Try to fetch user position with throttling
-          try {
-            const positionCacheKey = `position-${userPositionPda.toString()}`;
-            const userPositionAccount = await rpcThrottle.throttle(
-              positionCacheKey,
-              () => program.account.userPosition.fetch(userPositionPda),
-              15000 // Cache for 15 seconds
-            );
-            
-            if (mountedRef.current) {
-              // Calculate current accrued interest - only if vaultAccount exists
-              const currentTime = Math.floor(Date.now() / 1000);
-              const timeElapsed = currentTime - userPositionAccount.lastUpdateTime.toNumber();
-              const additionalInterest = calculateInterest(
-                userPositionAccount.depositedAmount.toNumber(),
-                vaultAccount.interestRate.toNumber(),
-                timeElapsed
-              );
-
-              setUserPosition({
-                deposited_amount: userPositionAccount.depositedAmount.toNumber(),
-                accrued_interest: userPositionAccount.accruedInterest.toNumber() + additionalInterest,
-                last_update_time: userPositionAccount.lastUpdateTime.toNumber(),
-                deposit_count: userPositionAccount.depositCount.toNumber(),
-                withdraw_count: userPositionAccount.withdrawCount.toNumber(),
-              });
-            }
-          } catch (err) {
-            // User position doesn't exist yet - this is normal for new users
-            if (mountedRef.current) {
-              console.log(`📭 No user position found for ${tokenSymbol}`);
-              setUserPosition(null);
-            }
-          }
+        } else if (mountedRef.current) {
+          setUserPosition(null);
         }
-      } catch (err: any) {
-        // Vault doesn't exist yet - this is normal and will be created on first deposit
-        if (err.message?.includes('Account does not exist') || err.message?.includes('has no data')) {
-          if (mountedRef.current) {
-            console.log(`🏗️ Vault not initialized yet for ${tokenSymbol}`);
-            setVaultInfo(null);
-            setUserPosition(null);
-          }
-        } else if (!err.message?.includes('429') && !err.message?.includes('Too many requests')) {
-          console.error('❌ Error fetching vault data:', err);
-          if (mountedRef.current) {
-            setError(`Failed to fetch vault data for ${tokenSymbol}`);
-          }
-        }
+      } else if (mountedRef.current) {
+        console.log(`🏗️ Vault not initialized yet for ${tokenSymbol}`);
+        setVaultInfo(null);
+        setUserPosition(null);
       }
     } catch (err: any) {
-      console.error('❌ Error in refreshData:', err);
-      if (mountedRef.current && !err.message?.includes('429')) {
-        setError('Failed to fetch vault data');
+      if (!err.message?.includes('429')) {
+        console.error('❌ Error fetching vault data:', err);
+        if (mountedRef.current) setError(`Failed to fetch vault data for ${tokenSymbol}`);
       }
     } finally {
-      if (mountedRef.current) {
-        setLoading(false);
-      }
+      if (mountedRef.current) setLoading(false);
     }
   }, [publicKey, token, connection, tokenSymbol]);
 
-  /**
-   * Enhanced error message extraction function
-   */
   const extractErrorMessage = useCallback((error: any): string => {
-    // If we have a clear, specific error message, use it
-    if (error?.message && 
-        error.message !== 'Unexpected error' && 
-        error.message !== 'Error' &&
-        error.message.trim() !== '') {
-      return error.message;
+    if (error.name === 'WalletSendTransactionError' || error.name === 'WalletSignTransactionError') {
+        if (error.message.includes('User rejected the request')) {
+            return 'Transaction cancelled by user.';
+        }
     }
-    
-    // Try to get error name
-    if (error?.name && error.name !== 'Error') {
-      return error.name;
+    if (error.message) {
+        if (error.message.includes('blockhash not found')) return 'Transaction expired. Please try again.';
+        if (error.message.includes('insufficient funds')) return 'Insufficient SOL for transaction fees.';
+        return error.message;
     }
-    
-    // Try to get error code with description
-    if (error?.code) {
-      switch (error.code) {
-        case 4001:
-          return 'Transaction cancelled by user';
-        case 4100:
-          return 'Unauthorized request';
-        case 4200:
-          return 'Unsupported method';
-        case -32603:
-          return 'Internal JSON-RPC error';
-        case -32602:
-          return 'Invalid request parameters';
-        default:
-          return `Error code: ${error.code}`;
-      }
-    }
-    
-    // Try toString if it provides useful information
-    if (error?.toString && typeof error.toString === 'function') {
-      const stringified = error.toString();
-      if (stringified !== '[object Object]' && 
-          stringified !== 'Error' && 
-          stringified !== 'Unexpected error') {
-        return stringified;
-      }
-    }
-    
-    // Check for specific error types
-    if (error?.type) {
-      return `${error.type} error`;
-    }
-    
-    // Last resort - return a generic but helpful message
-    return 'Transaction failed. Please try again.';
+    return 'An unexpected error occurred. Please try again.';
   }, []);
 
-  /**
-   * Enhanced transaction building and sending with proper error handling
-   */
   const buildAndSendTransaction = useCallback(async (
     instructions: TransactionInstruction[],
     description: string
   ): Promise<string> => {
-    if (!publicKey) {
-      throw new Error('Wallet not connected');
-    }
+    if (!publicKey) throw new Error('Wallet not connected');
 
-    console.log(`🔨 Building transaction: ${description}`);
-    console.log(`📋 Instructions count: ${instructions.length}`);
+    console.log(`🔨 Building transaction: ${description} with ${instructions.length} instructions.`);
+    
+    const transaction = new Transaction();
+    instructions.forEach(instruction => transaction.add(instruction));
+
+    const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash('confirmed');
+    transaction.recentBlockhash = blockhash;
+    transaction.feePayer = publicKey;
+
+    console.log(`✅ Transaction built successfully. Fee payer: ${publicKey.toString()}`);
 
     try {
-      // Build transaction with all required properties
-      const transaction = new Transaction();
-      
-      // Add all instructions
-      instructions.forEach((instruction, index) => {
-        console.log(`➕ Adding instruction ${index + 1}: ${instruction.programId.toString()}`);
-        transaction.add(instruction);
-      });
-
-      // Get latest blockhash
-      console.log('🔗 Fetching latest blockhash...');
-      const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash('confirmed');
-      
-      // Set transaction properties
-      transaction.recentBlockhash = blockhash;
-      transaction.feePayer = publicKey;
-      
-      console.log(`✅ Transaction built successfully:`);
-      console.log(`   - Blockhash: ${blockhash}`);
-      console.log(`   - Fee payer: ${publicKey.toString()}`);
-      console.log(`   - Instructions: ${transaction.instructions.length}`);
-      console.log(`   - Last valid block height: ${lastValidBlockHeight}`);
-
-      // Try different signing methods based on wallet capabilities
-      let signature: string;
-
-      if (sendTransaction) {
-        console.log('📤 Using wallet.sendTransaction...');
-        signature = await sendTransaction(transaction, connection, {
-          skipPreflight: false,
-          preflightCommitment: 'confirmed',
-          maxRetries: 3,
-        });
-      } else if (signTransaction) {
-        console.log('✍️ Using wallet.signTransaction + connection.sendRawTransaction...');
-        const signedTransaction = await signTransaction(transaction);
-        
-        // Serialize and send
-        const rawTransaction = signedTransaction.serialize();
-        signature = await connection.sendRawTransaction(rawTransaction, {
-          skipPreflight: false,
-          preflightCommitment: 'confirmed',
-          maxRetries: 3,
-        });
-      } else {
-        throw new Error('Wallet does not support transaction signing');
-      }
-
-      console.log(`📝 Transaction signature: ${signature}`);
-
-      // Confirm transaction with detailed logging
-      console.log('⏳ Confirming transaction...');
-      const confirmation = await connection.confirmTransaction({
-        signature,
-        blockhash,
-        lastValidBlockHeight,
-      }, 'confirmed');
-
-      if (confirmation.value.err) {
-        console.error('❌ Transaction failed on-chain:', confirmation.value.err);
-        
-        // Get transaction details for better error reporting
+        // First, simulate the transaction to get better error details
+        console.log('🔍 Simulating transaction...');
         try {
-          const txDetails = await connection.getTransaction(signature, {
-            maxSupportedTransactionVersion: 0,
-          });
-          
-          if (txDetails?.meta?.logMessages) {
-            console.error('📋 Transaction logs:');
-            txDetails.meta.logMessages.forEach((log, index) => {
-              console.error(`   ${index + 1}: ${log}`);
-            });
+            const simulation = await connection.simulateTransaction(transaction);
             
-            // Surface specific error messages
-            const errorLogs = txDetails.meta.logMessages.filter(log => 
-              log.includes('Error') || log.includes('failed') || log.includes('insufficient')
-            );
-            
-            if (errorLogs.length > 0) {
-              throw new Error(`Transaction failed: ${errorLogs.join('; ')}`);
+            if (simulation.value.err) {
+                console.error('❌ Transaction simulation failed:', simulation.value.err);
+                console.error('📋 Simulation logs:', simulation.value.logs);
+                throw new Error(`Transaction simulation failed: ${JSON.stringify(simulation.value.err)}`);
             }
-          }
-        } catch (logError) {
-          console.warn('Could not fetch transaction logs:', logError);
+            
+            console.log('✅ Transaction simulation successful');
+            console.log('📋 Simulation logs:', simulation.value.logs);
+        } catch (simError: any) {
+            console.error('❌ Simulation error:', simError);
+            // Continue with actual transaction even if simulation fails
         }
-        
-        throw new Error(`Transaction failed on-chain: ${JSON.stringify(confirmation.value.err)}`);
-      }
 
-      console.log(`✅ Transaction confirmed: ${signature}`);
-      return signature;
+        const signature = await sendTransaction(transaction, connection, {
+            skipPreflight: false, // Keep preflight for better error detection
+            preflightCommitment: 'confirmed',
+        });
+
+        console.log(`📝 Transaction signature: ${signature}`);
+        console.log('⏳ Confirming transaction...');
+        
+        const confirmation = await connection.confirmTransaction({
+            signature,
+            blockhash,
+            lastValidBlockHeight
+        }, 'confirmed');
+
+        if (confirmation.value.err) {
+            throw new Error(`Transaction failed on-chain: ${JSON.stringify(confirmation.value.err)}`);
+        }
+
+        console.log(`✅ Transaction confirmed: ${signature}`);
+        return signature;
 
     } catch (error: any) {
-      console.error('❌ Transaction failed:', error);
-      
-      // Use enhanced error message extraction
-      const errorMessage = extractErrorMessage(error);
-      
-      // Handle specific error types with enhanced detection
-      if (errorMessage.includes('User rejected') || 
-          errorMessage.includes('rejected the request') ||
-          errorMessage.includes('cancelled by user') ||
-          errorMessage.includes('Transaction cancelled') ||
-          error?.name === 'WalletSignTransactionError') {
-        throw new Error('Transaction cancelled by user');
-      }
-      
-      if (errorMessage.includes('insufficient funds') ||
-          errorMessage.includes('Insufficient funds')) {
-        throw new Error('Insufficient SOL for transaction fees');
-      }
-      
-      if (errorMessage.includes('Blockhash not found') ||
-          errorMessage.includes('blockhash not found')) {
-        throw new Error('Transaction expired. Please try again.');
-      }
-      
-      if (errorMessage.includes('Instruction') && errorMessage.includes('missing signature')) {
-        throw new Error('Transaction missing required signature');
-      }
-      
-      if (errorMessage.includes('Simulation failed')) {
-        throw new Error('Transaction simulation failed. Please check your inputs.');
-      }
-      
-      if (errorMessage.includes('429') || errorMessage.includes('Too many requests')) {
-        throw new Error('RPC rate limit exceeded. Please wait and try again.');
-      }
-      
-      // Return the extracted error message
-      throw new Error(`Transaction failed: ${errorMessage}`);
+        console.error('❌ Transaction failed:', error);
+        console.error('❌ Error details:', {
+            name: error.name,
+            message: error.message,
+            code: error.code,
+            type: typeof error
+        });
+        
+        // Log additional error properties
+        if (error.logs) {
+            console.error('📋 Error logs:', error.logs);
+        }
+        
+        const errorMessage = extractErrorMessage(error);
+        throw new Error(errorMessage);
     }
   }, [publicKey, connection, sendTransaction, signTransaction, extractErrorMessage]);
 
   const ensureVaultExists = useCallback(async (tokenMint: PublicKey): Promise<TransactionInstruction[]> => {
-    if (!publicKey) {
-      throw new Error('Wallet not connected');
-    }
+    if (!publicKey) throw new Error('Wallet not connected');
 
     const program = getVaultProgram(connection, publicKey);
     const instructions: TransactionInstruction[] = [];
 
-    // Derive PDAs
     const [vaultPda] = PublicKey.findProgramAddressSync(
       [Buffer.from('vault'), tokenMint.toBuffer()],
       PROGRAM_ID
     );
 
-    const [vaultTokenPda] = PublicKey.findProgramAddressSync(
-      [Buffer.from('vault-token'), tokenMint.toBuffer()],
-      PROGRAM_ID
-    );
-
-    // Check if vault exists (use throttled cache)
     try {
-      const cacheKey = `vault-check-${vaultPda.toString()}`;
-      await rpcThrottle.throttle(
-        cacheKey,
-        () => program.account.vault.fetch(vaultPda),
-        10000 // Cache for 10 seconds
-      );
+      await rpcThrottle.throttle(`vault-check-${vaultPda.toString()}`, () => program.account.vault.fetch(vaultPda), 10000);
       console.log(`✅ Vault already exists for ${tokenSymbol}`);
     } catch (error) {
-      // Vault doesn't exist, add initialization instruction
-      console.log(`🏗️ Creating vault for ${tokenSymbol}`);
+      console.log(`🏗️ Vault for ${tokenSymbol} does not exist. Creating initialization instruction.`);
       
-      // Get default values for this token
       const interestRate = INTEREST_RATES[tokenSymbol as keyof typeof INTEREST_RATES] || 500;
-      const minDepositInDisplayUnits = MIN_DEPOSITS[tokenSymbol as keyof typeof MIN_DEPOSITS] || 1;
-      const minDeposit = Math.floor(minDepositInDisplayUnits * Math.pow(10, token?.decimals || 6));
-
-      // Use appropriate token program based on token type
-      const tokenProgram = token?.symbol === 'SOL' ? TOKEN_PROGRAM_ID : TOKEN_2022_PROGRAM_ID;
-
-      const initializeInstruction = await program.methods
-        .initializeVault(new BN(interestRate), new BN(minDeposit))
-        .accounts({
-          vault: vaultPda,
-          authority: publicKey,
-          tokenMint: tokenMint,
-          tokenVault: vaultTokenPda,
-          tokenProgram: tokenProgram,
-          systemProgram: SystemProgram.programId,
-          rent: web3.SYSVAR_RENT_PUBKEY,
-        })
-        .instruction();
-
-      instructions.push(initializeInstruction);
-    }
-
-    // Check if user's ATA exists and create if needed
-    const tokenProgram = token?.symbol === 'SOL' ? TOKEN_PROGRAM_ID : TOKEN_2022_PROGRAM_ID;
-    const userTokenAccount = getAssociatedTokenAddressSync(
-      tokenMint,
-      publicKey,
-      false,
-      tokenProgram
-    );
-
-    try {
-      const cacheKey = `ata-check-${userTokenAccount.toString()}`;
-      await rpcThrottle.throttle(
-        cacheKey,
-        () => getAccount(connection, userTokenAccount, 'confirmed', tokenProgram),
-        10000 // Cache for 10 seconds
-      );
-      console.log(`✅ User token account exists for ${tokenSymbol}`);
-    } catch (error) {
-      // ATA doesn't exist, create it
-      console.log(`🏗️ Creating token account for ${tokenSymbol}`);
-      const createATAInstruction = createAssociatedTokenAccountInstruction(
-        publicKey, // payer
-        userTokenAccount, // ata
-        publicKey, // owner
-        tokenMint, // mint
-        tokenProgram,
-        ASSOCIATED_TOKEN_PROGRAM_ID
-      );
-      instructions.push(createATAInstruction);
-    }
-
-    return instructions;
-  }, [publicKey, connection, token, tokenSymbol]);
-
-  const deposit = useCallback(async (amount: number) => {
-    if (!publicKey || !token) {
-      throw new Error('Wallet not connected');
-    }
-
-    // Show loading toast
-    const loadingToast = toast.loading('Preparing deposit transaction...');
-
-    try {
-      const tokenMint = new PublicKey(token.mint);
-      
-      // Convert amount to base units (e.g., 1.5 SOL → 1500000000 lamports)
-      const amountInBaseUnits = Math.floor(amount * Math.pow(10, token.decimals));
-      const amountBN = new BN(amountInBaseUnits);
-
-      console.log(`💰 Depositing ${amount} ${token.symbol} (${amountInBaseUnits} base units)`);
-
-      // Get all required instructions
-      const setupInstructions = await ensureVaultExists(tokenMint);
-      const program = getVaultProgram(connection, publicKey);
-
-      // Get PDAs
-      const [vaultPda] = PublicKey.findProgramAddressSync(
-        [Buffer.from('vault'), tokenMint.toBuffer()],
-        PROGRAM_ID
-      );
+      const minDeposit = new BN((MIN_DEPOSITS[tokenSymbol as keyof typeof MIN_DEPOSITS] || 1) * Math.pow(10, token?.decimals || 6));
+      const tokenProgramId = getCorrectTokenProgramId();
 
       const [vaultTokenPda] = PublicKey.findProgramAddressSync(
-        [Buffer.from('vault-token'), tokenMint.toBuffer()],
-        PROGRAM_ID
+          [Buffer.from('vault-token'), tokenMint.toBuffer()],
+          PROGRAM_ID
       );
 
-      const [userPositionPda] = PublicKey.findProgramAddressSync(
-        [Buffer.from('user-position'), vaultPda.toBuffer(), publicKey.toBuffer()],
-        PROGRAM_ID
+      instructions.push(
+        await program.methods
+          .initializeVault(new BN(interestRate), minDeposit)
+          .accounts({
+            vault: vaultPda,
+            authority: publicKey,
+            tokenMint: tokenMint,
+            tokenVault: vaultTokenPda,
+            tokenProgram: tokenProgramId,
+            systemProgram: SystemProgram.programId,
+            rent: web3.SYSVAR_RENT_PUBKEY,
+          })
+          .instruction()
       );
-
-      // Get user's token account with appropriate token program
-      const tokenProgram = token.symbol === 'SOL' ? TOKEN_PROGRAM_ID : TOKEN_2022_PROGRAM_ID;
-      const userTokenAccount = getAssociatedTokenAddressSync(
-        tokenMint,
-        publicKey,
-        false,
-        tokenProgram
-      );
-
-      // Add deposit instruction
-      const depositInstruction = await program.methods
-        .deposit(amountBN)
-        .accounts({
-          vault: vaultPda,
-          userPosition: userPositionPda,
-          user: publicKey,
-          userTokenAccount: userTokenAccount,
-          vaultTokenAccount: vaultTokenPda,
-          tokenProgram: tokenProgram,
-          systemProgram: SystemProgram.programId,
-          rent: web3.SYSVAR_RENT_PUBKEY,
-        })
-        .instruction();
-
-      // Combine all instructions
-      const allInstructions = [...setupInstructions, depositInstruction];
-
-      // Update toast
-      toast.dismiss(loadingToast);
-      const approvalToast = toast.loading('Waiting for approval in Phantom...');
-
-      // Build and send transaction
-      const signature = await buildAndSendTransaction(
-        allInstructions,
-        `Deposit ${amount} ${token.symbol}`
-      );
-
-      // Dismiss approval toast
-      toast.dismiss(approvalToast);
-
-      // Clear relevant caches to force fresh data
-      rpcThrottle.clearCache(`vault-${vaultPda.toString()}`);
-      rpcThrottle.clearCache(`position-${userPositionPda.toString()}`);
-
-      // Refresh data and show success
-      setTimeout(() => {
-        refreshData();
-      }, 3000); // Wait 3 seconds for transaction to propagate
-      
-      toast.success(`✅ Deposited ${amount} ${token.symbol} successfully!`);
-
-      return signature;
-    } catch (error: any) {
-      // Dismiss any active toasts
-      toast.dismiss(loadingToast);
-
-      console.error('❌ Deposit failed:', error);
-      
-      // Use enhanced error message extraction
-      const errorMessage = extractErrorMessage(error);
-      
-      // Handle specific errors with user-friendly messages
-      if (errorMessage.includes('Transaction cancelled by user')) {
-        toast.error('Deposit cancelled – please approve in Phantom 🔮');
-        throw new Error(errorMessage);
-      }
-      
-      if (errorMessage.includes('Insufficient SOL for transaction fees')) {
-        toast.error('Insufficient SOL for transaction fees');
-        throw new Error(errorMessage);
-      }
-      
-      if (errorMessage.includes('Transaction expired')) {
-        toast.error('Transaction expired. Please try again.');
-        throw new Error(errorMessage);
-      }
-      
-      if (errorMessage.includes('RPC rate limit')) {
-        toast.error('Network busy. Please wait a moment and try again.');
-        throw new Error(errorMessage);
-      }
-      
-      // Show the extracted error message
-      toast.error(errorMessage);
-      throw new Error(errorMessage);
     }
-  }, [publicKey, token, connection, refreshData, ensureVaultExists, buildAndSendTransaction, extractErrorMessage]);
+    return instructions;
+  }, [publicKey, connection, token, tokenSymbol, getCorrectTokenProgramId]);
+
+  const deposit = useCallback(async (amount: number) => {
+    if (!publicKey || !token) throw new Error('Wallet not connected or token not supported');
+
+    const loadingToast = toast.loading('Preparing deposit transaction...');
+    
+    try {
+        const amountInBaseUnits = new BN(amount * Math.pow(10, token.decimals));
+        console.log(`💰 Depositing ${amount} ${token.symbol} (${amountInBaseUnits.toString()} base units)`);
+
+        const program = getVaultProgram(connection, publicKey);
+        const tokenMint = new PublicKey(token.mint);
+        
+        // This is the key change: DO NOT create ATA for native SOL
+        // The setup instructions will only create the vault if needed.
+        const setupInstructions = await ensureVaultExists(tokenMint);
+        const allInstructions = [...setupInstructions];
+        
+        const tokenProgramId = getCorrectTokenProgramId();
+        
+        // Get PDAs
+        const [vaultPda] = PublicKey.findProgramAddressSync([Buffer.from('vault'), tokenMint.toBuffer()], PROGRAM_ID);
+        const [vaultTokenPda] = PublicKey.findProgramAddressSync([Buffer.from('vault-token'), tokenMint.toBuffer()], PROGRAM_ID);
+        const [userPositionPda] = PublicKey.findProgramAddressSync([Buffer.from('user-position'), vaultPda.toBuffer(), publicKey.toBuffer()], PROGRAM_ID);
+
+        // Get or create the user's Associated Token Account (ATA) only for SPL tokens.
+        if (token.symbol !== 'SOL') {
+            const userTokenAccount = getAssociatedTokenAddressSync(tokenMint, publicKey, false, tokenProgramId);
+            const accountInfo = await connection.getAccountInfo(userTokenAccount);
+            if (!accountInfo) {
+                console.log(`🏗️ Creating token account for ${tokenSymbol}`);
+                allInstructions.push(
+                    createAssociatedTokenAccountInstruction(publicKey, userTokenAccount, publicKey, tokenMint, tokenProgramId, ASSOCIATED_TOKEN_PROGRAM_ID)
+                );
+            }
+        }
+        
+        // The userTokenAccount for the deposit instruction should be the user's public key for SOL
+        // and their ATA for SPL tokens. The program should handle this distinction.
+        const userTokenAccount = (token.symbol === 'SOL')
+            ? publicKey
+            : getAssociatedTokenAddressSync(tokenMint, publicKey, false, tokenProgramId);
+
+        allInstructions.push(
+            await program.methods
+                .deposit(amountInBaseUnits)
+                .accounts({
+                    vault: vaultPda,
+                    userPosition: userPositionPda,
+                    user: publicKey,
+                    userTokenAccount: userTokenAccount, // This now correctly points to the user's wallet for SOL
+                    vaultTokenAccount: vaultTokenPda,
+                    tokenProgram: tokenProgramId,
+                    systemProgram: SystemProgram.programId,
+                    rent: web3.SYSVAR_RENT_PUBKEY,
+                })
+                .instruction()
+        );
+
+        toast.dismiss(loadingToast);
+        const approvalToast = toast.loading('Waiting for approval in your wallet...');
+
+        const signature = await buildAndSendTransaction(allInstructions, `Deposit ${amount} ${token.symbol}`);
+
+        toast.dismiss(approvalToast);
+        toast.success(`✅ Deposited ${amount} ${token.symbol} successfully!`);
+        
+        // Clear caches and refresh data
+        rpcThrottle.clearCache(`vault-${vaultPda.toString()}`);
+        rpcThrottle.clearCache(`position-${userPositionPda.toString()}`);
+        setTimeout(() => refreshData(), 2000);
+
+        return signature;
+    } catch (error: any) {
+        toast.dismiss(loadingToast);
+        console.error('❌ Deposit failed:', error);
+        toast.error(`Deposit failed: ${error.message}`);
+        throw error;
+    }
+  }, [publicKey, token, connection, refreshData, ensureVaultExists, buildAndSendTransaction, getCorrectTokenProgramId]);
 
   const withdraw = useCallback(async (amount: number) => {
-    if (!publicKey || !token) {
-      throw new Error('Wallet not connected');
-    }
+    if (!publicKey || !token) throw new Error('Wallet not connected or token not supported');
 
-    // Show loading toast
     const loadingToast = toast.loading('Preparing withdrawal transaction...');
 
     try {
-      const tokenMint = new PublicKey(token.mint);
-      
-      // Convert amount to base units
-      const amountInBaseUnits = Math.floor(amount * Math.pow(10, token.decimals));
-      const amountBN = new BN(amountInBaseUnits);
+        const amountInBaseUnits = new BN(amount * Math.pow(10, token.decimals));
+        console.log(`💸 Withdrawing ${amount} ${token.symbol}`);
 
-      console.log(`💸 Withdrawing ${amount} ${token.symbol} (${amountInBaseUnits} base units)`);
+        const program = getVaultProgram(connection, publicKey);
+        const tokenMint = new PublicKey(token.mint);
+        const tokenProgramId = getCorrectTokenProgramId();
 
-      const program = getVaultProgram(connection, publicKey);
+        const [vaultPda] = PublicKey.findProgramAddressSync([Buffer.from('vault'), tokenMint.toBuffer()], PROGRAM_ID);
+        const [vaultTokenPda] = PublicKey.findProgramAddressSync([Buffer.from('vault-token'), tokenMint.toBuffer()], PROGRAM_ID);
+        const [userPositionPda] = PublicKey.findProgramAddressSync([Buffer.from('user-position'), vaultPda.toBuffer(), publicKey.toBuffer()], PROGRAM_ID);
+        
+        const userTokenAccount = (token.symbol === 'SOL')
+            ? publicKey
+            : getAssociatedTokenAddressSync(tokenMint, publicKey, false, tokenProgramId);
 
-      // Get PDAs
-      const [vaultPda] = PublicKey.findProgramAddressSync(
-        [Buffer.from('vault'), tokenMint.toBuffer()],
-        PROGRAM_ID
-      );
+        const withdrawInstruction = await program.methods
+            .withdraw(amountInBaseUnits)
+            .accounts({
+                vault: vaultPda,
+                userPosition: userPositionPda,
+                user: publicKey,
+                userTokenAccount: userTokenAccount,
+                vaultTokenAccount: vaultTokenPda,
+                tokenProgram: tokenProgramId,
+            })
+            .instruction();
 
-      const [vaultTokenPda] = PublicKey.findProgramAddressSync(
-        [Buffer.from('vault-token'), tokenMint.toBuffer()],
-        PROGRAM_ID
-      );
+        toast.dismiss(loadingToast);
+        const approvalToast = toast.loading('Waiting for approval in your wallet...');
 
-      const [userPositionPda] = PublicKey.findProgramAddressSync(
-        [Buffer.from('user-position'), vaultPda.toBuffer(), publicKey.toBuffer()],
-        PROGRAM_ID
-      );
+        const signature = await buildAndSendTransaction([withdrawInstruction], `Withdraw ${amount} ${token.symbol}`);
 
-      // Get user's token account with appropriate token program
-      const tokenProgram = token.symbol === 'SOL' ? TOKEN_PROGRAM_ID : TOKEN_2022_PROGRAM_ID;
-      const userTokenAccount = getAssociatedTokenAddressSync(
-        tokenMint,
-        publicKey,
-        false,
-        tokenProgram
-      );
+        toast.dismiss(approvalToast);
+        toast.success(`✅ Withdrew ${amount} ${token.symbol} successfully!`);
+        
+        rpcThrottle.clearCache(`vault-${vaultPda.toString()}`);
+        rpcThrottle.clearCache(`position-${userPositionPda.toString()}`);
+        setTimeout(() => refreshData(), 2000);
 
-      // Build withdraw instruction
-      const withdrawInstruction = await program.methods
-        .withdraw(amountBN)
-        .accounts({
-          vault: vaultPda,
-          userPosition: userPositionPda,
-          user: publicKey,
-          userTokenAccount: userTokenAccount,
-          vaultTokenAccount: vaultTokenPda,
-          tokenProgram: tokenProgram,
-        })
-        .instruction();
-
-      // Update toast
-      toast.dismiss(loadingToast);
-      const approvalToast = toast.loading('Waiting for approval in Phantom...');
-
-      // Build and send transaction
-      const signature = await buildAndSendTransaction(
-        [withdrawInstruction],
-        `Withdraw ${amount} ${token.symbol}`
-      );
-
-      // Dismiss approval toast
-      toast.dismiss(approvalToast);
-
-      // Clear relevant caches to force fresh data
-      rpcThrottle.clearCache(`vault-${vaultPda.toString()}`);
-      rpcThrottle.clearCache(`position-${userPositionPda.toString()}`);
-
-      // Refresh data and show success
-      setTimeout(() => {
-        refreshData();
-      }, 3000); // Wait 3 seconds for transaction to propagate
-      
-      toast.success(`✅ Withdrew ${amount} ${token.symbol} successfully!`);
-
-      return signature;
+        return signature;
     } catch (error: any) {
-      // Dismiss any active toasts
-      toast.dismiss(loadingToast);
-
-      console.error('❌ Withdraw failed:', error);
-      
-      // Use enhanced error message extraction
-      const errorMessage = extractErrorMessage(error);
-      
-      // Handle specific errors with user-friendly messages
-      if (errorMessage.includes('Transaction cancelled by user')) {
-        toast.error('Withdrawal cancelled – please approve in Phantom 🔮');
-        throw new Error(errorMessage);
-      }
-      
-      if (errorMessage.includes('Insufficient SOL for transaction fees')) {
-        toast.error('Insufficient SOL for transaction fees');
-        throw new Error(errorMessage);
-      }
-      
-      if (errorMessage.includes('Transaction expired')) {
-        toast.error('Transaction expired. Please try again.');
-        throw new Error(errorMessage);
-      }
-      
-      if (errorMessage.includes('RPC rate limit')) {
-        toast.error('Network busy. Please wait a moment and try again.');
-        throw new Error(errorMessage);
-      }
-      
-      if (errorMessage.includes('Insufficient balance')) {
-        toast.error('Insufficient vault balance for withdrawal');
-        throw new Error(errorMessage);
-      }
-      
-      // Show the extracted error message
-      toast.error(errorMessage);
-      throw new Error(errorMessage);
+        toast.dismiss(loadingToast);
+        console.error('❌ Withdraw failed:', error);
+        toast.error(`Withdrawal failed: ${error.message}`);
+        throw error;
     }
-  }, [publicKey, token, connection, refreshData, buildAndSendTransaction, extractErrorMessage]);
+  }, [publicKey, token, connection, refreshData, buildAndSendTransaction, getCorrectTokenProgramId]);
 
-  // Manual refresh function
   const manualRefresh = useCallback(() => {
-    // Clear relevant caches to force fresh data
     if (publicKey && token) {
-      const tokenMint = new PublicKey(token.mint);
-      const [vaultPda] = PublicKey.findProgramAddressSync(
-        [Buffer.from('vault'), tokenMint.toBuffer()],
-        PROGRAM_ID
-      );
-      const [userPositionPda] = PublicKey.findProgramAddressSync(
-        [Buffer.from('user-position'), vaultPda.toBuffer(), publicKey.toBuffer()],
-        PROGRAM_ID
-      );
-      
-      rpcThrottle.clearCache(`vault-${vaultPda.toString()}`);
-      rpcThrottle.clearCache(`position-${userPositionPda.toString()}`);
+        const tokenMint = new PublicKey(token.mint);
+        const [vaultPda] = PublicKey.findProgramAddressSync([Buffer.from('vault'), tokenMint.toBuffer()], PROGRAM_ID);
+        const [userPositionPda] = PublicKey.findProgramAddressSync([Buffer.from('user-position'), vaultPda.toBuffer(), publicKey.toBuffer()], PROGRAM_ID);
+        rpcThrottle.clearCache(`vault-${vaultPda.toString()}`);
+        rpcThrottle.clearCache(`position-${userPositionPda.toString()}`);
     }
     refreshData();
   }, [refreshData, publicKey, token]);
-
+  
   useEffect(() => {
     mountedRef.current = true;
-    
-    // Initial fetch
     refreshData();
-    
-    // Set up polling with longer interval to avoid rate limiting
-    if (intervalRef.current) {
-      clearInterval(intervalRef.current);
-    }
-    
+
+    // Set up polling
+    if (intervalRef.current) clearInterval(intervalRef.current);
     intervalRef.current = setInterval(() => {
-      if (mountedRef.current) {
-        refreshData();
-      }
-    }, 180000); // Fetch every 3 minutes instead of 1 minute
+        if (mountedRef.current) refreshData();
+    }, 180000); // 3 minutes
 
     return () => {
       mountedRef.current = false;
       if (intervalRef.current) {
         clearInterval(intervalRef.current);
-        intervalRef.current = null;
       }
     };
   }, [refreshData]);
-
-  // Cleanup on unmount
-  useEffect(() => {
-    return () => {
-      mountedRef.current = false;
-      if (intervalRef.current) {
-        clearInterval(intervalRef.current);
-      }
-    };
-  }, []);
 
   return {
     userPosition,
@@ -764,16 +459,4 @@ export function useVault(tokenSymbol: string) {
     withdraw,
     refreshData: manualRefresh,
   };
-}
-
-// Helper function to calculate interest (matches the smart contract logic)
-function calculateInterest(principal: number, interestRateBps: number, timeElapsed: number): number {
-  if (principal === 0 || timeElapsed <= 0) {
-    return 0;
-  }
-  
-  const secondsPerYear = 365 * 24 * 60 * 60;
-  const interest = (principal * interestRateBps * timeElapsed) / (10000 * secondsPerYear);
-  
-  return Math.floor(interest);
 }

@@ -67,7 +67,8 @@ export function WalletButton() {
             className="bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 text-white font-medium px-6 py-3 rounded-xl shadow-lg hover:shadow-xl transition-all duration-300"
             onClick={() => {
               // This will trigger the wallet modal
-              document.querySelector('.wallet-adapter-button')?.click();
+              const walletButton = document.querySelector('.wallet-adapter-button') as HTMLElement;
+              walletButton?.click();
             }}
           >
             <Zap className="h-4 w-4 mr-2" />
